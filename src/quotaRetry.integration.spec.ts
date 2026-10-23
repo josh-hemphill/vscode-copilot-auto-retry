@@ -19,6 +19,7 @@ describe("daily quota retry lifecycle", () => {
   let engine: RetryEngine;
   let watcher: SessionWatcher;
   let resolver: ActiveSessionResolver;
+  let guardrails: Guardrails;
   let commands: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -32,7 +33,8 @@ describe("daily quota retry lifecycle", () => {
     resolver = new ActiveSessionResolver(logger);
     vi.spyOn(resolver, "isSessionActive").mockResolvedValue(true);
     commands = vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined);
-    engine = new RetryEngine(logger, new Guardrails(logger), resolver);
+    guardrails = new Guardrails(logger);
+    engine = new RetryEngine(logger, guardrails, resolver);
     watcher = new SessionWatcher(logger);
     watcher.onRetryableError(error => {
       void engine.triggerRetryCycle(RetryEngine.triggerFromSessionError(error));
@@ -83,11 +85,36 @@ describe("daily quota retry lifecycle", () => {
     expect(engine.getNextRetryAt()).toBe(Date.now() + 12 * HOURS);
   });
 
+  it.each(["recent attempt", "exhausted cycle"])("queues the quota wait despite a %s", async (restriction) => {
+    if (restriction === "recent attempt") {
+      guardrails.recordRetryAttempt();
+    } else {
+      guardrails.recordCycleExhausted();
+    }
+    await engine.triggerRetryCycle(RetryEngine.triggerFromSessionError(quotaError("Daily quota exceeded. Resets in 8 hours.")));
+    expect(engine.getNextRetryAt()).toBe(Date.now() + 8 * HOURS + 1000);
+    await vi.advanceTimersByTimeAsync(8 * HOURS + 1400);
+    expect(commands).toHaveBeenCalledWith("workbench.action.chat.submit", expect.any(Object));
+  });
+
   it("cancels the pending wait on disposal", async () => {
     await engine.triggerRetryCycle(RetryEngine.triggerFromSessionError(quotaError()));
     engine.dispose();
     await vi.advanceTimersByTimeAsync(24 * HOURS);
     expect(commands).not.toHaveBeenCalled();
+  });
+
+  it("cancels a quota wait when the user stops the request", async () => {
+    const result = (code: string, message: string) => JSON.stringify({
+      kind: 1, k: ["requests", 0, "result"], v: { errorDetails: { code, message } },
+    });
+    watcher["processSessionContent"]("quota-session", result("quotaExceeded", "Daily quota exceeded"));
+    expect(engine.getState()).toBe("waiting");
+    watcher["processSessionContent"]("quota-session", result("canceled", "Canceled"));
+    await vi.advanceTimersByTimeAsync(24 * HOURS);
+    expect(commands).not.toHaveBeenCalled();
+    expect(watcher.hasActiveErrors()).toBe(false);
+    expect(engine.getState()).toBe("idle");
   });
 
   it.each([
@@ -108,6 +135,17 @@ describe("daily quota retry lifecycle", () => {
     engine.cancelActiveCycle("quota session recovered", "quota-session");
     await vi.advanceTimersByTimeAsync(24 * HOURS);
     expect(commands).not.toHaveBeenCalled();
+  });
+
+  it.each(["network", "manual"])("cancels an unscoped %s cycle when a session recovers", async (source) => {
+    const trigger = source === "network"
+      ? RetryEngine.triggerFromNetworkRecovery()
+      : RetryEngine.triggerFromManualAction();
+    await engine.triggerRetryCycle(trigger);
+    engine.cancelActiveCycle("session recovered", "quota-session");
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(commands).not.toHaveBeenCalled();
+    expect(engine.getState()).toBe("idle");
   });
 
   it("does not submit into another active session after the wait", async () => {

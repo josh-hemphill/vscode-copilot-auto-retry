@@ -385,36 +385,41 @@ export class SessionWatcher implements vscode.Disposable {
       ? `${latestErrorDetails.requestIndex}:${latestErrorDetails.code}:${latestErrorDetails.message.substring(0, 50)}`
       : undefined;
 
+    if (latestErrorDetails && NON_RETRYABLE_ERROR_CODES.has(latestErrorDetails.code)) {
+      if (previousError) {
+        this.lastDetectedErrors.delete(sessionId);
+        this.emitRecovery(sessionId);
+      }
+      this.logger.debug(
+        `Non-retryable error in session ${sessionId}: code=${latestErrorDetails.code} (skipped)`,
+      );
+      return;
+    }
+
     if (latestErrorDetails && (latestErrorDetails.hasRetryButton ||
       isDailyQuotaError(latestErrorDetails.code, latestErrorDetails.message))) {
-      if (!NON_RETRYABLE_ERROR_CODES.has(latestErrorDetails.code)) {
-        // New retryable error detected
-        if (currentErrorSignature !== previousError) {
-          this.lastDetectedErrors.set(sessionId, currentErrorSignature!);
+      // New retryable error detected
+      if (currentErrorSignature !== previousError) {
+        this.lastDetectedErrors.set(sessionId, currentErrorSignature!);
 
-          const sessionError: SessionError = {
-            sessionId,
-            errorCode: latestErrorDetails.code,
-            message: latestErrorDetails.message,
-            hasRetryButton: latestErrorDetails.hasRetryButton,
-            detectedAt: Date.now(),
-          };
+        const sessionError: SessionError = {
+          sessionId,
+          errorCode: latestErrorDetails.code,
+          message: latestErrorDetails.message,
+          hasRetryButton: latestErrorDetails.hasRetryButton,
+          detectedAt: Date.now(),
+        };
 
-          this.logger.info(
-            `Retryable error detected in session ${sessionId}: ` +
-            `code=${latestErrorDetails.code}, ` +
-            `request #${latestErrorDetails.requestIndex}`,
-          );
+        this.logger.info(
+          `Retryable error detected in session ${sessionId}: ` +
+          `code=${latestErrorDetails.code}, ` +
+          `request #${latestErrorDetails.requestIndex}`,
+        );
 
-          this.emitRetryableError(sessionError);
-        } else {
-          this.logger.debug(
-            `Same error still present in session ${sessionId} — not re-triggering`,
-          );
-        }
+        this.emitRetryableError(sessionError);
       } else {
         this.logger.debug(
-          `Non-retryable error in session ${sessionId}: code=${latestErrorDetails.code} (skipped)`,
+          `Same error still present in session ${sessionId} — not re-triggering`,
         );
       }
     } else if (previousError && !currentErrorSignature) {

@@ -172,13 +172,15 @@ export class RetryEngine implements vscode.Disposable {
       return;
     }
 
-    if (!this.guardrails.canRetry()) {
+    const config = readConfig();
+    // Temporary rate/cooldown restrictions must not discard a future quota wait.
+    // Every actual attempt still passes canRetry() when the timer expires.
+    const hasFutureDeadline = (trigger.retryNotBefore ?? 0) > Date.now();
+    if (!config.enabled || (!hasFutureDeadline && !this.guardrails.canRetry())) {
       this.logger.debug("Guardrails blocked retry cycle start");
       this.setState("cooldown");
       return;
     }
-
-    const config = readConfig();
 
     this.activeCycle = {
       trigger,
@@ -201,7 +203,8 @@ export class RetryEngine implements vscode.Disposable {
    * when the session watcher detects recovery, or when the error resolves.
    */
   cancelActiveCycle(reason: string, sessionId?: string): void {
-    if (!this.activeCycle || (sessionId && this.activeCycle.trigger.sessionId !== sessionId)) {
+    if (!this.activeCycle || (sessionId && this.activeCycle.trigger.sessionId &&
+      this.activeCycle.trigger.sessionId !== sessionId)) {
       return;
     }
 
