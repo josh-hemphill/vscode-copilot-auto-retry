@@ -17,7 +17,8 @@ jobs:
           ref: 4d32316366193ee08fed749949573c7fae10e6e1
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
+      - run: npm install --global npm@11.9.0
       - run: npm install --package-lock=false
       - run: npm test
       - name: Package extension
