@@ -4,7 +4,7 @@ import { readConfig } from "./configuration";
 import { Guardrails } from "./guardrails";
 import { ActiveSessionResolver } from "./activeSessionResolver";
 import { SessionError } from "./sessionWatcher";
-import { isDailyQuotaError, parseQuotaResetDelay } from "./quotaRetry";
+import { isDailyQuotaError, parseQuotaResetDelay, retryAfterDelay } from "./quotaRetry";
 
 /**
  * Manages retry attempts for detected Copilot errors using exponential backoff.
@@ -70,6 +70,12 @@ export interface RetryTrigger {
   timestamp: number;
   /** Earliest retry time for a daily quota failure. */
   retryNotBefore?: number;
+  target?: "agents-window";
+  errorFingerprint?: string;
+}
+
+export interface AgentsRetryGuard {
+  canRetry(trigger: RetryTrigger): Promise<boolean>;
 }
 
 interface ActiveRetryCycle {
@@ -92,6 +98,7 @@ export class RetryEngine implements vscode.Disposable {
     private readonly logger: Logger,
     private readonly guardrails: Guardrails,
     private readonly activeSessionResolver?: ActiveSessionResolver,
+    private readonly agentsRetryGuard?: AgentsRetryGuard,
   ) {}
 
   /**
@@ -124,7 +131,7 @@ export class RetryEngine implements vscode.Disposable {
    */
   static triggerFromSessionError(sessionError: SessionError): RetryTrigger {
     const quotaDelay = isDailyQuotaError(sessionError.errorCode, sessionError.message)
-      ? parseQuotaResetDelay(sessionError.message) ??
+      ? retryAfterDelay(sessionError.retryAfterSeconds) ?? parseQuotaResetDelay(sessionError.message) ??
         Math.min(24, Math.max(1, readConfig().dailyQuotaRetryDelayHours || 6)) * 3_600_000
       : undefined;
     return {
@@ -134,6 +141,8 @@ export class RetryEngine implements vscode.Disposable {
       detail: `Session ${sessionError.sessionId}: ${sessionError.message.substring(0, 120)}`,
       timestamp: sessionError.detectedAt,
       retryNotBefore: quotaDelay === undefined ? undefined : sessionError.detectedAt + quotaDelay,
+      target: sessionError.target,
+      errorFingerprint: sessionError.errorFingerprint,
     };
   }
 
@@ -281,7 +290,12 @@ export class RetryEngine implements vscode.Disposable {
     // Verify the errored session is still the active (visible) one.
     // If the user switched to a different session, submitting a retry
     // prompt would go to the wrong conversation.
-    if (cycle.trigger.sessionId && this.activeSessionResolver) {
+    if (cycle.trigger.target === "agents-window") {
+      if (!await this.agentsRetryGuard?.canRetry(cycle.trigger) || cycle.cancelled) {
+        if (!cycle.cancelled) { this.cancelActiveCycle("Agents session or quota error is no longer current"); }
+        return;
+      }
+    } else if (cycle.trigger.sessionId && this.activeSessionResolver) {
       const sessionIsActive = await this.activeSessionResolver.isSessionActive(
         cycle.trigger.sessionId,
       );
@@ -307,13 +321,28 @@ export class RetryEngine implements vscode.Disposable {
 
       // Step 1 — Focus the chat panel so the widget is the "lastFocusedWidget"
       await vscode.commands.executeCommand(
-        "workbench.panel.chat.view.copilot.focus",
+        cycle.trigger.target === "agents-window"
+          ? "sessions.focusActiveSession"
+          : "workbench.panel.chat.view.copilot.focus",
       );
 
       // Small settle delay so the widget finishes any internal initialisation
       await this.delay(FOCUS_SETTLE_DELAY_MS);
 
       if (cycle.cancelled) {
+        return;
+      }
+
+      // Focus settles asynchronously. Verify both the Agents session and its
+      // original error again, and never fall back to the workbench side panel.
+      if (cycle.trigger.target === "agents-window" &&
+        (!await this.agentsRetryGuard?.canRetry(cycle.trigger) || cycle.cancelled)) {
+        if (!cycle.cancelled) { this.cancelActiveCycle("Agents target changed before submission"); }
+        return;
+      }
+      if (cycle.cancelled) { return; }
+      if (!readConfig().enabled) {
+        this.cancelActiveCycle("disabled before submission");
         return;
       }
 
@@ -324,13 +353,17 @@ export class RetryEngine implements vscode.Disposable {
       this.logger.info("Submitting retry prompt via chat submit");
       await vscode.commands.executeCommand("workbench.action.chat.submit", {
         inputValue: RETRY_PROMPT,
+        ...(cycle.trigger.target === "agents-window"
+          ? { acceptInputOptions: { preserveInput: true, preserveFocus: true } } : {}),
       });
 
-      this.logger.info("Retry prompt submitted successfully");
+      if (cycle.cancelled || this.activeCycle !== cycle) { return; }
+      this.logger.info("Retry command dispatched; watching for the next session result");
       this.guardrails.recordSuccess();
       this.activeCycle = undefined;
       this.setState("idle");
     } catch (executeError) {
+      if (cycle.cancelled || this.activeCycle !== cycle) { return; }
       const message =
         executeError instanceof Error
           ? executeError.message

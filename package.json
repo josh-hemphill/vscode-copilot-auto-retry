@@ -83,6 +83,11 @@
       {
         "command": "copilotAutoRetry.simulateError",
         "title": "Copilot Auto-Retry: [Dev] Simulate Rate-Limit Error"
+      },
+      {
+        "command": "copilotAutoRetry.watchAgentsSession",
+        "title": "Copilot Auto-Retry: Watch Current Agents Session",
+        "enablement": "isSessionsWindow"
       }
     ],
     "keybindings": [
@@ -108,5 +113,10 @@
     "@types/vscode": "^1.90.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"
+  },
+  "capabilities": {
+    "agentsWindow": {
+      "supported": true
+    }
   }
 }

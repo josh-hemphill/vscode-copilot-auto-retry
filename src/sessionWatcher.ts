@@ -37,6 +37,9 @@ export interface SessionError {
   hasRetryButton: boolean;
   /** Timestamp when we detected this error. */
   detectedAt: number;
+  retryAfterSeconds?: number;
+  target?: "agents-window";
+  errorFingerprint?: string;
 }
 
 /**
