@@ -1,0 +1,61 @@
+name: Package Agents window testing VSIX
+
+on:
+  push:
+    branches: [testing/vsix-agents-window]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 8cbd46e50d23aaa9233bee914b29ebf8939c49eb
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install --global npm@11.9.0
+      - run: npm install --package-lock=false
+      - run: npm test
+      - name: Package extension
+        run: npx --yes @vscode/vsce package --no-dependencies --out "${RUNNER_TEMP}/vscode-copilot-auto-retry-0.3.2-agents-window-8cbd46e.vsix"
+      - name: Publish testing prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          cd "${RUNNER_TEMP}"
+          sha256sum vscode-copilot-auto-retry-0.3.2-agents-window-8cbd46e.vsix > SHA256SUMS
+          cat > release-notes.md <<'NOTES'
+          Experimental build from feature branch feat/agents-window-retry, stacked on the daily quota retry work.
+
+          Built from commit 8cbd46e50d23aaa9233bee914b29ebf8939c49eb. Targets the local Copilot harness in VS Code Stable 1.143.1. A live BYOK quota exhaustion has not been exercised.
+
+          ### Install and test
+
+          Download the .vsix below. In VS Code run **Extensions: Install from VSIX...**, select it, and reload the Agents window.
+
+          CLI: code --install-extension vscode-copilot-auto-retry-0.3.2-agents-window-8cbd46e.vsix --force
+
+          This retains version 0.3.2 and replaces the installed extension. Disable automatic updates for the extension while testing; reinstall from the Marketplace to return to the published build.
+
+          1. If needed, enable agents.voice.enabled and reload. Stable exposes the read-only current-conversation lookup under this setting; the extension does not start voice recording or use a microphone.
+          2. Select your existing local Copilot harness conversation, then run **Copilot Auto-Retry: Watch Current Agents Session**. It reveals the harness event file once to resolve the SDK session mapping. Close any already-active events.jsonl tab before attaching. You can close the revealed file and return to your conversation afterwards.
+          3. Run **Copilot Auto-Retry: Show Status**. It should show Window: Agents, Detection: Detected credit_quota_exhausted, Engine state: waiting, and a dated Next retry. The output logs the retry_after_seconds value.
+          4. Keep the watched conversation selected when the retry is due. One conversation is watched per window; the binding restores after reload.
+
+          The supplied retry_after_seconds: 83116 waits 23h 5m 16s plus a one-second margin. It takes precedence over the Quata resets text and six-hour fallback. The original event timestamp anchors the deadline.
+
+          The extension submits a follow-up in Agents, retaining the current model and draft; it does not open the workbench Chat side panel. Internal focus/submission commands are not atomic session targeting: avoid switching conversations at the instant the retry fires. Remote/cloud sessions and other harnesses are unsupported. VS Code must allow the Agents capability declaration (extensions.experimental.enableAgentsWindowCapability, enabled by default in the tested release).
+
+          Validation: TypeScript compilation, 159 passing tests, two independent review passes, and VSIX packaging. SHA256SUMS is attached.
+          NOTES
+          if gh release view agents-window-8cbd46e --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload agents-window-8cbd46e vscode-copilot-auto-retry-0.3.2-agents-window-8cbd46e.vsix SHA256SUMS --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            gh release create agents-window-8cbd46e vscode-copilot-auto-retry-0.3.2-agents-window-8cbd46e.vsix SHA256SUMS --repo "${GITHUB_REPOSITORY}" --target 8cbd46e50d23aaa9233bee914b29ebf8939c49eb --title "Copilot Agents window — experimental testing build" --notes-file release-notes.md --prerelease --latest=false
+          fi
