@@ -66,6 +66,22 @@ Or search for **"Copilot Auto-Retry"** in the VS Code Extensions view (`Cmd+Shif
 | **Copilot Auto-Retry: Toggle Enabled** | Toggle on/off (also available by clicking the status bar item) |
 | **Copilot Auto-Retry: Retry Now** | Manually trigger an immediate retry (`Cmd+Shift+R` / `Ctrl+Shift+R`) |
 | **Copilot Auto-Retry: Show Status** | Display detailed status in the output channel |
+| **Copilot Auto-Retry: Watch Current Agents Session** | Attach daily quota monitoring to the selected local Copilot harness conversation in the Agents window |
+
+## Agents Window (Experimental)
+
+This feature branch supports the local **Copilot harness** in the separate Agents window, based on VS Code Stable 1.143.1. It reads Copilot SDK `session.error` events and submits a continuation inside Agents, keeping the selected model and unsent draft. It does not open the workbench Chat side panel.
+
+1. Install the testing VSIX and reload the Agents window. The extension declares `capabilities.agentsWindow.supported`; VS Code's `extensions.experimental.enableAgentsWindowCapability` setting must allow this declaration (enabled by default in the tested Stable version).
+2. Enable `agents.voice.enabled` if needed. Stable exposes its read-only current-conversation lookup under that setting. The extension does not start a voice session or use a microphone. If the lookup is unavailable, it reports the missing setting and skips retries.
+3. Select the existing Copilot conversation and run **Copilot Auto-Retry: Watch Current Agents Session**. The command reveals the harness's local `events.jsonl` file once to resolve the actual SDK conversation. You can close that editor and return to the conversation. If an events file was already active, close it before attaching so the extension can verify the mapping.
+4. Run **Copilot Auto-Retry: Show Status**. Look for `Window: Agents`, `Detection: Detected credit_quota_exhausted`, `Engine state: waiting`, and a dated `Next retry`. The output also logs `retry_after_seconds` when it is available.
+
+For example, `retry_after_seconds: 83116` schedules a wait of **23h 5m 16s plus a one-second margin**, even when the message says `Quata resets in 23h 5m`. The structured value takes precedence over message parsing and the six-hour fallback. The provider event timestamp anchors the deadline, so restoring the watch after a window reload does not restart the full provider wait.
+
+One conversation is watched per Agents window. The binding is restored after reload; run the watch command again to select a different conversation. New user messages, cancellation, superseding errors, or an unreadable event file cancel its pending wait. A new quota event replaces the previous deadline.
+
+Keep the watched conversation active when its retry is due. The extension checks the current session and original error before focusing Agents and again before submitting. This uses internal VS Code commands and focus followed by submission; it is not atomic session targeting. Avoid switching conversations as the retry fires. Remote/cloud harnesses, other harnesses, and automatic discovery of every Agents conversation are not supported in this build. Live BYOK quota exhaustion still needs manual testing.
 
 ## Settings
 

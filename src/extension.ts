@@ -7,6 +7,7 @@ import { ActiveSessionResolver } from "./activeSessionResolver";
 import { NetworkMonitor } from "./networkMonitor";
 import { SessionWatcher } from "./sessionWatcher";
 import { StatusBar } from "./statusBar";
+import { AgentsWindow, isAgentsWindow } from "./agentsWindow";
 
 /**
  * Extension entry point.
@@ -36,17 +37,58 @@ import { StatusBar } from "./statusBar";
  * session files immediately. When a retryable error is detected, the retry
  * engine fires with bounded exponential backoff.
  */
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const logger = new Logger();
   logger.info("Copilot Auto-Retry activating...");
 
+  const inAgentsWindow = await isAgentsWindow();
+  const agentsWindow = new AgentsWindow(logger, context.workspaceState);
+  logger.info(`Window: ${inAgentsWindow ? "Agents" : "workbench"}`);
+
   const guardrails = new Guardrails(logger);
   const activeSessionResolver = new ActiveSessionResolver(logger);
-  activeSessionResolver.initialize(context.storageUri);
-  const retryEngine = new RetryEngine(logger, guardrails, activeSessionResolver);
+  if (!inAgentsWindow) { activeSessionResolver.initialize(context.storageUri); }
+  const retryEngine = new RetryEngine(logger, guardrails, activeSessionResolver, agentsWindow);
   const networkMonitor = new NetworkMonitor(logger);
   const sessionWatcher = new SessionWatcher(logger);
   const statusBar = new StatusBar(logger);
+
+  function refreshStatus(): void {
+    statusBar.updateDisplay(retryEngine.getState(), retryEngine.getCurrentAttempt(),
+      readConfig().maxRetries, retryEngine.getNextRetryAt());
+  }
+
+  async function startMonitoring(): Promise<void> {
+    if (inAgentsWindow) {
+      await agentsWindow.restore();
+    } else {
+      networkMonitor.start();
+      await sessionWatcher.start(context.storageUri);
+    }
+  }
+
+  agentsWindow.onError(error => {
+    if (readConfig().enabled) { void retryEngine.triggerRetryCycle(RetryEngine.triggerFromSessionError(error)); }
+  });
+  agentsWindow.onRecovery(session => retryEngine.cancelActiveCycle("Agents error superseded or watch stopped", session));
+  context.subscriptions.push(agentsWindow);
+  context.subscriptions.push(vscode.commands.registerCommand("copilotAutoRetry.watchAgentsSession", async () => {
+    if (!inAgentsWindow) {
+      vscode.window.showWarningMessage("Open the Agents window and select your Copilot conversation first.");
+      return;
+    }
+    if (!readConfig().enabled) {
+      vscode.window.showWarningMessage("Enable Copilot Auto-Retry first.");
+      return;
+    }
+    try {
+      await agentsWindow.watchCurrentSession();
+      logger.show();
+      vscode.window.showInformationMessage("Watching this Copilot Agents conversation for daily quota errors. Run Show Status to inspect detection and the next retry time.");
+    } catch (error) {
+      vscode.window.showWarningMessage(error instanceof Error ? error.message : "Unable to watch this Agents session.");
+    }
+  }));
 
   // ── Primary error detection: session file watcher ──────────────────────
   //
@@ -138,9 +180,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("copilotAutoRetry.enable", async () => {
       await setEnabled(true);
       guardrails.reset();
-      networkMonitor.restart();
-      await sessionWatcher.start(context.storageUri);
-      statusBar.updateDisplay("idle");
+      await startMonitoring();
+      refreshStatus();
       logger.info("Extension enabled by user");
       vscode.window.showInformationMessage("Copilot Auto-Retry enabled.");
     }),
@@ -152,6 +193,7 @@ export function activate(context: vscode.ExtensionContext): void {
       retryEngine.cancelActiveCycle("disabled by user");
       networkMonitor.stop();
       sessionWatcher.stop();
+      agentsWindow.stop();
       statusBar.updateDisplay("disabled");
       logger.info("Extension disabled by user");
       vscode.window.showInformationMessage("Copilot Auto-Retry disabled.");
@@ -187,8 +229,9 @@ export function activate(context: vscode.ExtensionContext): void {
         `Daily quota fallback: ${config.dailyQuotaRetryDelayHours} hours`,
         `Next retry: ${retryEngine.getNextRetryAt() ? new Date(retryEngine.getNextRetryAt()!).toLocaleString() : "none"}`,
         `Consecutive failures: ${consecutiveFailures}`,
-        `Detection: session file watcher + network monitor`,
-        `Retry method: chat submit (focus + follow-up prompt)`,
+        `Window: ${inAgentsWindow ? "Agents" : "workbench"}`,
+        `Detection: ${inAgentsWindow ? agentsWindow.getStatus() : "session file watcher + network monitor"}`,
+        `Retry method: ${inAgentsWindow ? "Agents conversation submit (preserves model and draft)" : "chat submit (focus + follow-up prompt)"}`,
       ];
 
       logger.show();
@@ -223,8 +266,20 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      const trigger = RetryEngine.triggerFromManualAction();
-      await retryEngine.triggerRetryCycle(trigger);
+      if (inAgentsWindow) {
+        try {
+          const error = await agentsWindow.getCurrentError();
+          if (!error) {
+            vscode.window.showWarningMessage("No daily quota error in the watched Agents session. Run Watch Current Agents Session first.");
+            return;
+          }
+          await retryEngine.triggerRetryCycle(RetryEngine.triggerFromSessionError(error));
+        } catch {
+          vscode.window.showWarningMessage("Unable to read the watched Agents session. Run Watch Current Agents Session again.");
+        }
+      } else {
+        await retryEngine.triggerRetryCycle(RetryEngine.triggerFromManualAction());
+      }
     }),
   );
 
@@ -241,6 +296,10 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
 
+        if (inAgentsWindow) {
+          vscode.window.showWarningMessage("Simulation is only available in the workbench. Use Watch Current Agents Session for the Copilot harness.");
+          return;
+        }
         logger.show();
         logger.info("=== SIMULATION START ===");
         logger.info(
@@ -283,11 +342,11 @@ export function activate(context: vscode.ExtensionContext): void {
         retryEngine.cancelActiveCycle("disabled via settings");
         networkMonitor.stop();
         sessionWatcher.stop();
+        agentsWindow.stop();
         statusBar.updateDisplay("disabled");
       } else {
-        networkMonitor.restart();
-        void sessionWatcher.start(context.storageUri);
-        statusBar.updateDisplay(retryEngine.getState());
+        void startMonitoring();
+        refreshStatus();
       }
     }),
   );
@@ -303,9 +362,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const config = readConfig();
 
   if (config.enabled) {
-    networkMonitor.start();
-    void sessionWatcher.start(context.storageUri);
-    statusBar.updateDisplay("idle");
+    await startMonitoring();
+    refreshStatus();
   } else {
     statusBar.updateDisplay("disabled");
   }

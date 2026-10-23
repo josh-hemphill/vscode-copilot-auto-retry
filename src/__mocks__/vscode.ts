@@ -77,6 +77,7 @@ export const workspace = {
 };
 
 export const window = {
+  activeTextEditor: undefined as any,
 	createOutputChannel: () => ({
 		info: () => {},
 		warn: () => {},
@@ -89,5 +90,6 @@ export const window = {
 };
 
 export const commands = {
+  getCommands: async (_filterInternal = false): Promise<string[]> => [],
 	executeCommand: async () => {},
 };

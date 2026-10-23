@@ -1,8 +1,19 @@
 /** Daily quota failures can be retried even when Copilot omits Try Again. */
 export function isDailyQuotaError(code: string, message: string): boolean {
+  if (code === "credit_quota_exhausted" || code === "credit_limit_exceeded") {
+    return true;
+  }
   return /daily.*(?:quota|credit|limit)|(?:quota|credit|limit).*daily/i.test(
     `${code} ${message}`,
   );
+}
+
+/** Validate a provider duration before passing it to Node's timeout API. */
+export function retryAfterDelay(seconds: unknown): number | undefined {
+  return typeof seconds === "number" && Number.isFinite(seconds) &&
+    seconds >= 0 && seconds < (2_147_483_647 - 1000) / 1000
+    ? Math.ceil(seconds * 1000) + 1000
+    : undefined;
 }
 
 /**
