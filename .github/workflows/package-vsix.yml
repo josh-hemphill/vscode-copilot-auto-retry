@@ -1,0 +1,53 @@
+name: Package daily quota testing VSIX
+
+on:
+  push:
+    branches: [testing/vsix-daily-quota]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 4d32316366193ee08fed749949573c7fae10e6e1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --package-lock=false
+      - run: npm test
+      - name: Package extension
+        run: npx --yes @vscode/vsce package --no-dependencies --out "${RUNNER_TEMP}/vscode-copilot-auto-retry-0.3.2-daily-quota-4d32316.vsix"
+      - name: Publish testing prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          cd "${RUNNER_TEMP}"
+          sha256sum vscode-copilot-auto-retry-0.3.2-daily-quota-4d32316.vsix > SHA256SUMS
+          cat > release-notes.md <<'NOTES'
+          Manual testing build for upstream PR #7:
+          https://github.com/Maxim-Mazurok/vscode-copilot-auto-retry/pull/7
+
+          Built from commit 4d32316366193ee08fed749949573c7fae10e6e1.
+          Adds daily quota reset waits and a configurable six-hour fallback.
+
+          Download the .vsix below, then run **Extensions: Install from VSIX...** in VS Code and reload if prompted.
+
+          CLI: code --install-extension vscode-copilot-auto-retry-0.3.2-daily-quota-4d32316.vsix --force
+
+          This retains extension version 0.3.2 and replaces your installed copy for testing. Disable automatic updates for this extension while testing. Reinstall from the Marketplace to return to the published build.
+
+          Check copilotAutoRetry.dailyQuotaRetryDelayHours (default 6; range 1–24). When a daily quota error occurs, hover over the status bar or run Show Status to see the scheduled retry time. A supported reset duration takes precedence over the fallback. Keep VS Code open and the affected session active. Disabling the extension or recovery cancels the wait.
+
+          Validation: TypeScript compilation, 119 tests, VSIX packaging. A live Copilot quota exhaustion was not exercised. SHA256SUMS is attached.
+          NOTES
+          if gh release view daily-quota-retry-4d32316 --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload daily-quota-retry-4d32316 vscode-copilot-auto-retry-0.3.2-daily-quota-4d32316.vsix SHA256SUMS --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            gh release create daily-quota-retry-4d32316 vscode-copilot-auto-retry-0.3.2-daily-quota-4d32316.vsix SHA256SUMS --repo "${GITHUB_REPOSITORY}" --target 4d32316366193ee08fed749949573c7fae10e6e1 --title "Daily quota retry — manual testing build" --notes-file release-notes.md --prerelease --latest=false
+          fi
