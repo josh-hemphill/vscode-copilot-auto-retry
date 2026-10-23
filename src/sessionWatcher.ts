@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { Logger } from "./logger";
+import { isDailyQuotaError } from "./quotaRetry";
 
 /**
  * Watches Copilot chat session files on disk to detect conversation errors.
@@ -384,7 +385,8 @@ export class SessionWatcher implements vscode.Disposable {
       ? `${latestErrorDetails.requestIndex}:${latestErrorDetails.code}:${latestErrorDetails.message.substring(0, 50)}`
       : undefined;
 
-    if (latestErrorDetails && latestErrorDetails.hasRetryButton) {
+    if (latestErrorDetails && (latestErrorDetails.hasRetryButton ||
+      isDailyQuotaError(latestErrorDetails.code, latestErrorDetails.message))) {
       if (!NON_RETRYABLE_ERROR_CODES.has(latestErrorDetails.code)) {
         // New retryable error detected
         if (currentErrorSignature !== previousError) {
@@ -394,7 +396,7 @@ export class SessionWatcher implements vscode.Disposable {
             sessionId,
             errorCode: latestErrorDetails.code,
             message: latestErrorDetails.message,
-            hasRetryButton: true,
+            hasRetryButton: latestErrorDetails.hasRetryButton,
             detectedAt: Date.now(),
           };
 
